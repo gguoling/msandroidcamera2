@@ -65,8 +65,8 @@ struct AndroidCamera2Context {
 			captureFormat(AIMAGE_FORMAT_YUV_420_888), previewFormat(WINDOW_FORMAT_RGBX_8888), 
 			frame(nullptr), bufAllocator(ms_yuv_buf_allocator_new()), fps(5), 
 			cameraDevice(nullptr), captureSession(nullptr), captureSessionOutputContainer(nullptr), 
-			nativeWindow(nullptr), captureWindow(nullptr), captureRequest(nullptr), cameraOutputTarget(nullptr),
-			sessionOutput(nullptr), imageReader(nullptr) 
+			nativeWindow(nullptr), captureWindow(nullptr), captureRequest(nullptr), cameraCaptureOutputTarget(nullptr), cameraPreviewOutputTarget(nullptr),
+			sessionCaptureOutput(nullptr), sessionPreviewOutput(nullptr), imageReader(nullptr) 
 	{
 		captureSize.width = 0;
 		captureSize.height = 0;
@@ -109,8 +109,10 @@ struct AndroidCamera2Context {
 	ANativeWindow *nativeWindow;
 	ANativeWindow *captureWindow;
 	ACaptureRequest *captureRequest;
-	ACameraOutputTarget *cameraOutputTarget;
-	ACaptureSessionOutput *sessionOutput;
+	ACameraOutputTarget *cameraCaptureOutputTarget;
+	ACameraOutputTarget *cameraPreviewOutputTarget;
+	ACaptureSessionOutput *sessionCaptureOutput;
+	ACaptureSessionOutput *sessionPreviewOutput;
 	AImageReader *imageReader;
 
 	ACameraDevice_StateCallbacks deviceStateCallbacks;
@@ -140,28 +142,6 @@ static void android_camera2_capture_session_on_closed(void *context, ACameraCapt
 }
 
 /* ************************************************************************* */
-
-static inline uint32_t android_camera2_capture_yuv_to_rgb(int nY, int nU, int nV) {
-	const int kMaxChannelValue = 262143;
-	nY -= 16;
-	nU -= 128;
-	nV -= 128;
-	if (nY < 0) nY = 0;
-
-	int nR = (int)(1192 * nY + 1634 * nV);
-	int nG = (int)(1192 * nY - 833 * nV - 400 * nU);
-	int nB = (int)(1192 * nY + 2066 * nU);
-
-	nR = MIN(kMaxChannelValue, MAX(0, nR));
-	nG = MIN(kMaxChannelValue, MAX(0, nG));
-	nB = MIN(kMaxChannelValue, MAX(0, nB));
-
-	nR = (nR >> 10) & 0xff;
-	nG = (nG >> 10) & 0xff;
-	nB = (nB >> 10) & 0xff;
-
-	return 0xff000000 | (nR << 16) | (nG << 8) | nB;
-}
 
 static int32_t android_camera2_capture_get_orientation(AndroidCamera2Context *d) {
 	int32_t orientation = d->device->orientation;
@@ -213,80 +193,6 @@ static mblk_t* android_camera2_capture_image_to_mblkt(AndroidCamera2Context *d, 
 	return yuv_block;
 }
 
-static void android_camera2_capture_rotate_image(AndroidCamera2Context *d, ANativeWindow_Buffer *buf, AImage *image) {
-	int32_t yStride, uvStride;
-	uint8_t *yPixel, *uPixel, *vPixel;
-	int32_t yLen, uLen, vLen;
-	int32_t uvPixelStride;
-	int32_t orientation = android_camera2_capture_get_orientation(d);
-  	AImageCropRect srcRect;
-
-  	AImage_getCropRect(image, &srcRect);
-
-	int32_t transform = ANATIVEWINDOW_TRANSFORM_IDENTITY;
-	if (orientation == 90) {
-		transform = ANATIVEWINDOW_TRANSFORM_ROTATE_90;
-	} else if (orientation == 180) {
-		transform = ANATIVEWINDOW_TRANSFORM_ROTATE_180;
-	} else if (orientation == 270) {
-		transform = ANATIVEWINDOW_TRANSFORM_ROTATE_270;
-	}
-	ANativeWindow_setBuffersTransform(d->nativeWindow, transform);
-
-	AImage_getPlaneRowStride(image, 0, &yStride);
-	AImage_getPlaneRowStride(image, 1, &uvStride);
-	AImage_getPlaneData(image, 0, &yPixel, &yLen);
-	AImage_getPlaneData(image, 1, &vPixel, &vLen);
-	AImage_getPlaneData(image, 2, &uPixel, &uLen);
-	AImage_getPlanePixelStride(image, 1, &uvPixelStride);
-
-	int32_t height = MIN(buf->height, (srcRect.bottom - srcRect.top));
-  	int32_t width = MIN(buf->width, (srcRect.right - srcRect.left));
-
-	uint32_t *out = static_cast<uint32_t *>(buf->bits);
-	for (int32_t y = 0; y < height; y++) {
-		const uint8_t *pY = yPixel + yStride * (y + srcRect.top) + srcRect.left;
-
-		int32_t uv_row_start = uvStride * ((y + srcRect.top) >> 1);
-		const uint8_t *pU = uPixel + uv_row_start + (srcRect.left >> 1);
-		const uint8_t *pV = vPixel + uv_row_start + (srcRect.left >> 1);
-
-		for (int32_t x = 0; x < width; x++) {
-			const int32_t uv_offset = (x >> 1) * uvPixelStride;
-			out[x] = android_camera2_capture_yuv_to_rgb(pY[x], pU[uv_offset], pV[uv_offset]);
-		}
-		out += buf->stride;
-	}
-}
-
-static void android_camera2_capture_display_image(AndroidCamera2Context *d, AImage *image) {
-	if (!d->nativeWindow) {
-		ms_error("[Camera2 Capture] Preview surface wasn't set yet");
-		return;
-	}
-
-	ANativeWindow_Buffer buffer;
-	ANativeWindow_acquire(d->nativeWindow);
-	int32_t status = ANativeWindow_lock(d->nativeWindow, &buffer, nullptr);
-	if (status < 0) {
-		ms_error("[Camera2 Capture] Couldn't lock preview window: %d", status);
-		ANativeWindow_release(d->nativeWindow);
-		return;
-	}
-
-	if (buffer.format == d->previewFormat) {
-		// No need for conversion, just display it
-		android_camera2_capture_rotate_image(d, &buffer, image);
-	} else {
-		ms_error("[Camera2 Capture] Acquired buffer is in wrong format %d, expected %d", buffer.format, d->previewFormat);
-	}
-	status = ANativeWindow_unlockAndPost(d->nativeWindow);
-	ANativeWindow_release(d->nativeWindow);
-	if (status < 0) {
-		ms_error("[Camera2 Capture] Couldn't unlock and post buffer: %d", status);
-	}
-}
-
 static void android_camera2_capture_on_image_available(void *context, AImageReader *reader) {
 	AndroidCamera2Context *d = static_cast<AndroidCamera2Context *>(context);
 
@@ -298,11 +204,13 @@ static void android_camera2_capture_on_image_available(void *context, AImageRead
 		if (status == AMEDIA_OK) {
 			if (d->capturing) {
 				ms_filter_lock(d->filter);
+
 				if (d->filter == nullptr && d->filter->ticker == nullptr) {
 					ms_error("[Camera2 Capture] Filter destroyed, we shouldn't be here !");
 					ms_filter_unlock(d->filter);
 					return;
 				}
+
 				if (ms_video_capture_new_frame(&d->fpsControl, d->filter->ticker->time)) {
 					mblk_t *m = android_camera2_capture_image_to_mblkt(d, image);
 					if (m) {
@@ -313,7 +221,6 @@ static void android_camera2_capture_on_image_available(void *context, AImageRead
 					}
 				}
 
-				android_camera2_capture_display_image(d, image);
 				ms_filter_unlock(d->filter);
 			}
 			
@@ -340,6 +247,19 @@ static void android_camera2_capture_create_preview(AndroidCamera2Context *d) {
 	d->nativeWindow = ANativeWindow_fromSurface(jenv, d->surface);
 	ANativeWindow_setBuffersGeometry(d->nativeWindow, d->captureSize.width, d->captureSize.height, d->previewFormat);
 	ms_message("[Camera2 Capture] Asked buffer size to be %i/%i with format %i", d->captureSize.width, d->captureSize.height, d->previewFormat);
+
+	int32_t orientation = d->rotation;
+	int32_t transform = ANATIVEWINDOW_TRANSFORM_IDENTITY;
+	if (orientation == 90) {
+		transform = ANATIVEWINDOW_TRANSFORM_ROTATE_90;
+	} else if (orientation == 180) {
+		transform = ANATIVEWINDOW_TRANSFORM_ROTATE_180;
+	} else if (orientation == 270) {
+		transform = ANATIVEWINDOW_TRANSFORM_ROTATE_270;
+	}
+	// THIS DOESNT WORK !!!
+	ANativeWindow_setBuffersTransform(d->nativeWindow, transform);
+	ms_message("[Camera2 Capture] Preview display rotated by %i", d->rotation);
 
 	d->previewSize.width = ANativeWindow_getWidth(d->nativeWindow);
 	d->previewSize.height = ANativeWindow_getHeight(d->nativeWindow);
@@ -443,15 +363,21 @@ static void android_camera2_capture_start(AndroidCamera2Context *d) {
 	ANativeWindow_acquire(d->captureWindow);
 	ms_message("[Camera2 Capture] Capture window acquired");
 
-    ACaptureSessionOutput_create(d->captureWindow, &d->sessionOutput);
-    ACaptureSessionOutputContainer_add(d->captureSessionOutputContainer, d->sessionOutput);
+    ACaptureSessionOutput_create(d->captureWindow, &d->sessionCaptureOutput);
+    ACaptureSessionOutputContainer_add(d->captureSessionOutputContainer, d->sessionCaptureOutput);
 
-	ACameraOutputTarget_create(d->captureWindow, &d->cameraOutputTarget);
+    ACaptureSessionOutput_create(d->nativeWindow, &d->sessionPreviewOutput);
+    ACaptureSessionOutputContainer_add(d->captureSessionOutputContainer, d->sessionPreviewOutput);
+
+	ACameraOutputTarget_create(d->captureWindow, &d->cameraCaptureOutputTarget);
 	camera_status_t camera_status = ACameraDevice_createCaptureRequest(d->cameraDevice, TEMPLATE_RECORD, &d->captureRequest); // TEMPLATE_RECORD > TEMPLATE_PREVIEW > TEMPLATE_STILL_CAPTURE in fps ?
 	if (camera_status != ACAMERA_OK) {
 		ms_error("[Camera2 Capture] Failed to create capture request");
 	}
-    ACaptureRequest_addTarget(d->captureRequest, d->cameraOutputTarget);
+    ACaptureRequest_addTarget(d->captureRequest, d->cameraCaptureOutputTarget);
+
+	ACameraOutputTarget_create(d->nativeWindow, &d->cameraPreviewOutputTarget);
+    ACaptureRequest_addTarget(d->captureRequest, d->cameraPreviewOutputTarget);
 
     ACameraDevice_createCaptureSession(d->cameraDevice, d->captureSessionOutputContainer, &d->captureSessionStateCallbacks, &d->captureSession);
     ACameraCaptureSession_setRepeatingRequest(d->captureSession, NULL, 1, &d->captureRequest, NULL);
@@ -474,9 +400,14 @@ static void android_camera2_capture_stop(AndroidCamera2Context *d) {
 		d->captureSession = nullptr;
 	}
 
-	if (d->cameraOutputTarget) {
-		ACameraOutputTarget_free(d->cameraOutputTarget);
-		d->cameraOutputTarget = nullptr;
+	if (d->cameraCaptureOutputTarget) {
+		ACameraOutputTarget_free(d->cameraCaptureOutputTarget);
+		d->cameraCaptureOutputTarget = nullptr;
+    }
+
+	if (d->cameraPreviewOutputTarget) {
+		ACameraOutputTarget_free(d->cameraPreviewOutputTarget);
+		d->cameraPreviewOutputTarget = nullptr;
     }
 
 	if (d->captureRequest) {
@@ -485,12 +416,18 @@ static void android_camera2_capture_stop(AndroidCamera2Context *d) {
     }
 
 	if (d->captureSessionOutputContainer) {
-		ACaptureSessionOutputContainer_remove(d->captureSessionOutputContainer, d->sessionOutput);
+		ACaptureSessionOutputContainer_remove(d->captureSessionOutputContainer, d->sessionCaptureOutput);
+		ACaptureSessionOutputContainer_remove(d->captureSessionOutputContainer, d->sessionPreviewOutput);
 	}
 
-	if (d->sessionOutput) {
-		ACaptureSessionOutput_free(d->sessionOutput);
-		d->sessionOutput = nullptr;
+	if (d->sessionCaptureOutput) {
+		ACaptureSessionOutput_free(d->sessionCaptureOutput);
+		d->sessionCaptureOutput = nullptr;
+    }
+
+	if (d->sessionPreviewOutput) {
+		ACaptureSessionOutput_free(d->sessionPreviewOutput);
+		d->sessionPreviewOutput = nullptr;
     }
 
 	if (d->captureWindow) {
