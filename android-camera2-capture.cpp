@@ -331,10 +331,10 @@ static void android_camera2_capture_start(AndroidCamera2Context *d) {
 	}
 
 	ACameraOutputTarget_create(d->nativeWindow, &d->cameraPreviewOutputTarget);
-    ACaptureRequest_addTarget(d->capturePreviewRequest, d->cameraPreviewOutputTarget);
+	ACaptureRequest_addTarget(d->capturePreviewRequest, d->cameraPreviewOutputTarget);
 
-    ACaptureSessionOutput_create(d->nativeWindow, &d->sessionPreviewOutput);
-    ACaptureSessionOutputContainer_add(d->captureSessionOutputContainer, d->sessionPreviewOutput);
+	ACaptureSessionOutput_create(d->nativeWindow, &d->sessionPreviewOutput);
+	ACaptureSessionOutputContainer_add(d->captureSessionOutputContainer, d->sessionPreviewOutput);
 	/* End of preview */
 
 	/* Start capture */
@@ -350,7 +350,7 @@ static void android_camera2_capture_start(AndroidCamera2Context *d) {
   	AImageReader_setImageListener(d->imageReader, &listener);
 	ms_message("[Camera2 Capture] Image reader created");
 
-  	status = AImageReader_getWindow(d->imageReader, &d->captureWindow);
+	status = AImageReader_getWindow(d->imageReader, &d->captureWindow);
 	if (status != AMEDIA_OK) {
 		ms_error("[Camera2 Capture] Capture window couldn't be acquired");
 		return;
@@ -363,17 +363,17 @@ static void android_camera2_capture_start(AndroidCamera2Context *d) {
 	if (camera_status != ACAMERA_OK) {
 		ms_error("[Camera2 Capture] Failed to create capture request");
 	}
-    ACaptureRequest_addTarget(d->captureRequest, d->cameraCaptureOutputTarget);
+	ACaptureRequest_addTarget(d->captureRequest, d->cameraCaptureOutputTarget);
 
-    ACaptureSessionOutput_create(d->captureWindow, &d->sessionCaptureOutput);
-    ACaptureSessionOutputContainer_add(d->captureSessionOutputContainer, d->sessionCaptureOutput);
+	ACaptureSessionOutput_create(d->captureWindow, &d->sessionCaptureOutput);
+	ACaptureSessionOutputContainer_add(d->captureSessionOutputContainer, d->sessionCaptureOutput);
 	/* End of capture */
 
-    ACameraDevice_createCaptureSession(d->cameraDevice, d->captureSessionOutputContainer, &d->captureSessionStateCallbacks, &d->captureSession);
-    ACaptureRequest *requests[2];
-    requests[0] = d->capturePreviewRequest;
-    requests[1] = d->captureRequest;
-    ACameraCaptureSession_setRepeatingRequest(d->captureSession, NULL, 2, requests, NULL);
+	ACameraDevice_createCaptureSession(d->cameraDevice, d->captureSessionOutputContainer, &d->captureSessionStateCallbacks, &d->captureSession);
+	ACaptureRequest *requests[2];
+	requests[0] = d->capturePreviewRequest;
+	requests[1] = d->captureRequest;
+	ACameraCaptureSession_setRepeatingRequest(d->captureSession, NULL, 2, requests, NULL);
 
 	d->capturing = true;
 	ms_message("[Camera2 Capture] Capture started");
@@ -760,16 +760,18 @@ void android_camera2_capture_detect(MSWebCamManager *obj) {
   			ACameraMetadata_const_entry face;
 			ACameraMetadata_getConstEntry(cameraMetadata, ACAMERA_LENS_FACING, &face);
 			bool back_facing = face.data.u8[0] == ACAMERA_LENS_FACING_BACK;
-			if (back_facing) {
-				ms_message("[Camera2 Capture] Camera %s is facing back with angle %d", camId, angle);
-			} else {
-				ms_message("[Camera2 Capture] Camera %s is facing front with angle %d", camId, angle);
+			const char *facing = "back";
+			if (!back_facing) {
+				facing = "front";
 			}
+			ms_message("[Camera2 Capture] Camera %s is facing %s with angle %d", camId, facing, angle);
 			device->back_facing = back_facing;
 
 			MSWebCam *cam = ms_web_cam_new(&ms_android_camera2_capture_webcam_desc);
-			cam->id = ms_strdup(camId);
-			cam->name = ms_strdup(camId);
+			char *idstring = (char*) ms_malloc(25);
+			snprintf(idstring, 26, "Camera2Device%sFacing%s", camId, facing);
+			cam->id = idstring;
+			cam->name = ms_strdup(idstring);
 			cam->data = device;
 
 			if ((back_facing && !back_facing_found) || (!back_facing && !front_facing_found)) {
